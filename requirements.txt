@@ -1,0 +1,6 @@
+motor==3.7.1
+numpy==2.3.2
+pandas==2.3.1
+plotly==5.23.0
+pytz==2025.2
+streamlit==1.47.0
