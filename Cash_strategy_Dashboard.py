@@ -407,7 +407,7 @@ class StreamlitDashboard:
             """, unsafe_allow_html=True)
 
     async def run_dashboard_async(self):
-        # st_autorefresh(interval=60 * 1000, key="datarefresh")
+        st_autorefresh(interval=60 * 1000, key="datarefresh")
         st.set_page_config(layout="wide", page_title=" Live Cash Strategy Dashboard", page_icon=None)
 
         # Initialize authentication session state
