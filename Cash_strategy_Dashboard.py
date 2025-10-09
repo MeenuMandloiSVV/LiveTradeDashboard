@@ -19,9 +19,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # MongoDB URI
-# mongo_uri = st.secrets["mongo"]["uri"]
+mongo_uri = st.secrets["mongo"]["uri"]
 
-mongo_uri = "mongodb+srv://Akash:Akash%405555@stockvertexventures.fxlf1gk.mongodb.net/?tls=true&tlsAllowInvalidCertificates=true"
 
 class LoginRateLimiter:
     def __init__(self):
