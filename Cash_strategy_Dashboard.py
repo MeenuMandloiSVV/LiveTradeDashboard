@@ -96,20 +96,23 @@ class StreamlitDashboard:
         self.rate_limiter = LoginRateLimiter()
         logger.info("Initialized StreamlitDashboard for dashboard")
 
-    async def fetch_ltp(self, token: str, instrument: str = None) -> float:
+    async def fetch_ltp(self, token: str, instrument: str = None) -> tuple[float, float]:
         try:
             ltp_doc = await self.db["LiveLtp"].find_one({"ExchangeInstrumentID": int(token)})
-            if ltp_doc and "LastTradedPrice" in ltp_doc:
-                return ltp_doc["LastTradedPrice"]
-            else:
-                return float('nan')
+            if ltp_doc:
+                ltp = ltp_doc.get("LastTradedPrice", float('nan'))
+                close = ltp_doc.get("Close", float('nan'))
+                return ltp, close
+            return float('nan'), float('nan')
         except Exception as e:
-            logger.error(f"Error fetching LTP from LiveLtp for token {token}: {e}")
-            return float('nan')
+            logger.error(f"Error fetching LTP and Close from LiveLtp for token {token}: {e}")
+            return float('nan'), float('nan')
 
     async def stats_calculation(self, output_df: pd.DataFrame, total_fund: float) -> tuple[pd.DataFrame, pd.DataFrame]:
         try:
+            output_df = output_df.copy()
             output_df["LTP"] = pd.to_numeric(output_df["LTP"], errors="coerce")
+            output_df["Close"] = pd.to_numeric(output_df["Close"], errors="coerce")
             def ensure_list_of_floats(val):
                 if isinstance(val, list):
                     return [float(x) for x in val if isinstance(x, (int, float, str)) and str(x).replace('.', '', 1).replace('-', '', 1).isdigit()]
@@ -216,13 +219,22 @@ class StreamlitDashboard:
 
             async def get_ltp_list(df):
                 tasks = [
-                    self.fetch_ltp(row["ExchangeInstrumentID"], row.get("Instrument")) if row["Pos"] == "open" else return_value(row.get("LTP", np.nan))
+                    self.fetch_ltp(row["ExchangeInstrumentID"], row.get("Instrument")) if row["Pos"] == "open" 
+                    else return_value((row.get("LTP", np.nan), row.get("Close", np.nan)))
                     for _, row in df.iterrows()
                 ]
-                return await asyncio.gather(*tasks)
+                results = await asyncio.gather(*tasks)
+                ltp_list = [result[0] for result in results]
+                close_list = [result[1] for result in results]
+                return ltp_list, close_list
 
-            filtered_df["LTP"] = await get_ltp_list(filtered_df)
+            ltp_close = await get_ltp_list(filtered_df)
+            filtered_df["LTP"] = ltp_close[0]
+            filtered_df["Close"] = ltp_close[1]
 
+
+
+            
             def update_sellprice_with_ltp(row):
                 if row["Pos"] == "open":
                     sell_prices = row["SellPrice"]
@@ -261,6 +273,17 @@ class StreamlitDashboard:
             total_fund = max(0.0, float(total_fund))
 
             filtered_df, stats_df = await self.stats_calculation(filtered_df, total_fund)
+            def calculate_yesterdays_pnl(row):
+                if row["Pos"] == "open":
+                    close = row.get("Close", np.nan)
+                    if pd.isna(close):
+                        return 0.0
+                    buy_mean = np.mean(row["BuyPrice"]) if row["BuyPrice"] else 0
+                    qty = row.get("Qty", 0)
+                    return (close - buy_mean) * qty
+                else:
+                    return row.get("Profit", np.nan)
+            filtered_df["Yesterday's PNL"] = filtered_df.apply(calculate_yesterdays_pnl, axis=1)
 
             def extract_entry_date(row):
                 en_dtime = row.get("EnDTime", None)
@@ -1023,7 +1046,7 @@ class StreamlitDashboard:
                 return
 
             display_columns = [
-                "StrategyID", "Symbol", "Pos","Profit & Loss","BuyPrice", "SellPrice", "LTP","Qty", "Instrument", "Option", "Strike", "ExpiryDT",
+                "StrategyID", "Symbol", "Pos","Profit & Loss","Yesterday's PNL","BuyPrice", "SellPrice", "LTP","Close","Qty", "Instrument", "Option", "Strike", "ExpiryDT",
                "ClientID"
             ]
             missing_cols = [col for col in display_columns if col not in filtered_df.columns and col != "Profit & Loss"]
@@ -1073,24 +1096,26 @@ class StreamlitDashboard:
                 st.markdown('<div style="text-align:center; margin-top: 0px;" class="section-heading"></div>', unsafe_allow_html=True)
             with col2:
                 _refresh_button = st.button("Refresh Data", key="float_refresh", help="Reload data")
-            if _refresh_button or (st.session_state.client_id_input and not st.session_state.data_fetched):
-                with st.spinner("Loading data..."):
+            if _refresh_button:
+                st.session_state.data_fetched = False
+                with st.spinner("Reloading all data..."):
                     client_ids = [cid.strip() for cid in st.session_state.client_id_input.split(",") if cid.strip()]
                     if not client_ids:
                         st.warning("Please enter at least one valid Client ID.")
-                        await self.close() # Changed from await strategy.close()
+                        st.rerun()
                         return
 
-                    filtered_df, stats_df, total_fund, error = await self.fetch_and_process_data(client_ids, None) # Changed from fetch_and_process_data(strategy, client_ids, None)
+                    filtered_df, stats_df, total_fund, error = await self.fetch_and_process_data(client_ids, None)
                     if error:
                         st.error(error)
-                        await self.close() # Changed from await strategy.close()
+                        st.rerun()
                         return
 
                     st.session_state.data_fetched = True
                     st.session_state.filtered_df = filtered_df
                     st.session_state.stats_df = stats_df
                     st.session_state.total_fund = total_fund
+                st.rerun()  # Force full page re-render from t
 
             # st.markdown('<div style="text-align:center; margin-top: 0px;" class="section-heading">Analytics</div>', unsafe_allow_html=True)
             st.markdown("""
@@ -1141,6 +1166,8 @@ class StreamlitDashboard:
             filtered_display_df["BuyPrice"] = filtered_display_df["BuyPrice"].apply(format_list_to_string)
             filtered_display_df["SellPrice"] = filtered_display_df["SellPrice"].apply(format_list_to_string)
             filtered_display_df["Strike"] = filtered_display_df["Strike"].apply(lambda x: f"{x:.2f}" if isinstance(x, (int, float)) and not pd.isna(x) else "-")
+            filtered_display_df["Close"] = filtered_display_df["Close"].apply(lambda x: f"{x:.2f}" if isinstance(x, (int, float)) and not pd.isna(x) else "-")
+            filtered_display_df["Yesterday's PNL"] = filtered_display_df["Yesterday's PNL"].apply(lambda x: f"{x:.2f}" if isinstance(x, (int, float)) and not pd.isna(x) else "-")
             filtered_display_df["ExpiryDT"] = filtered_display_df["ExpiryDT"].astype(str)
             # --- Force Pos column sorted as: open → close ---
             # Create a helper column for sorting
@@ -1164,7 +1191,7 @@ class StreamlitDashboard:
             gb.configure_column("Strike", minWidth=100, maxWidth=120, cellClass="bounce-on-hover")
             gb.configure_column("ExpiryDT", minWidth=120, maxWidth=150, cellClass="bounce-on-hover")
             gb.configure_column("Pos", minWidth=80, maxWidth=100, cellClass="bounce-on-hover",pinned='left')
-            gb.configure_column("Profit & Loss", minWidth=100, maxWidth=120, cellStyle=JsCode("""
+            gb.configure_column("Profit & Loss", minWidth=150, maxWidth=120, cellStyle=JsCode("""
                 function(params) {
                     if (params.value > 0) {
                         return {'backgroundColor': '#59de90', 'color': '#111827'};
@@ -1174,9 +1201,21 @@ class StreamlitDashboard:
                     return {};
                 }
             """), cellClass="bounce-on-hover",pinned='left')
+            gb.configure_column("Yesterday's PNL", minWidth=150, maxWidth=180, cellStyle=JsCode("""
+        function(params) {
+            if (params.value > 0) {
+                return {'backgroundColor': '#59de90', 'color': '#111827'};
+            } else if (params.value < 0) {
+                return {'backgroundColor': '#f27979', 'color': '#111827'};
+            }
+            return {};
+        }
+    """), cellClass="bounce-on-hover")
             gb.configure_column("BuyPrice", minWidth=120, maxWidth=150, cellClass="bounce-on-hover")
             gb.configure_column("SellPrice", minWidth=120, maxWidth=150, cellClass="bounce-on-hover")
             gb.configure_column("LTP", minWidth=100, maxWidth=120, cellClass="bounce-on-hover")
+            gb.configure_column("CLose", minWidth=100, maxWidth=120, cellClass="bounce-on-hover")
+
             gb.configure_column("Qty", minWidth=100, maxWidth=120, cellClass="bounce-on-hover")
             grid_options = gb.build()
             st.markdown(
