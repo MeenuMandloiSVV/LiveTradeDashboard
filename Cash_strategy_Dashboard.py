@@ -13,14 +13,15 @@ from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
 from st_aggrid.shared import JsCode
 import plotly.colors
 import time
-
+# from streamlit_autorefresh import st_autorefresh
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # MongoDB URI
-mongo_uri = st.secrets["mongo"]["uri"]
+# mongo_uri = st.secrets["mongo"]["uri"]
 
+mongo_uri = "mongodb+srv://Akash:Akash%405555@stockvertexventures.fxlf1gk.mongodb.net/?tls=true&tlsAllowInvalidCertificates=true"
 
 class LoginRateLimiter:
     def __init__(self):
@@ -155,7 +156,7 @@ class StreamlitDashboard:
                 "Total Trades": len(profits),
                 "Profit Factor": abs(profit_trades.sum() / loss_trades.sum()) if loss_trades.sum() != 0 else float("inf"),
                 "Capital Utilization(Open)": output_df.loc[output_df["Pos"] == "open", "CapitalUsed"].sum(),
-                "Capital Utilization %": (output_df.loc[output_df["Pos"] == "open", "CapitalUsed"].sum() / total_fund * 100),
+                # "Capital Utilization %": (output_df.loc[output_df["Pos"] == "open", "CapitalUsed"].sum() / total_fund * 100),
                 "Turnover": total_turnover
             }
             def format_value(x):
@@ -242,11 +243,7 @@ class StreamlitDashboard:
                 lambda x: sum(x) if isinstance(x, list) and len(x) > 0 else (x if isinstance(x, (int, float)) else 0)
             )
 
-            # Replace the original total_fund calculation in fetch_and_process_data
-# Filter by selected StrategyID(s)
-            # Replace the original total_fund calculation in fetch_and_process_data method
-
-# Option 1: Sum StockInvestment if available and non-empty
+          
             if "StockInvestment" in filtered_df.columns and not filtered_df["StockInvestment"].dropna().empty:
                 total_fund = float(filtered_df["StockInvestment"].dropna().sum())  # Sum all non-null values
                 logger.info(f"Total fund from StockInvestment: {total_fund}")
@@ -407,7 +404,7 @@ class StreamlitDashboard:
             """, unsafe_allow_html=True)
 
     async def run_dashboard_async(self):
-        #st_autorefresh(interval=60 * 1000, key="datarefresh")
+        # st_autorefresh(interval=60 * 1000, key="datarefresh")
         st.set_page_config(layout="wide", page_title=" Live Cash Strategy Dashboard", page_icon=None)
 
         # Initialize authentication session state
@@ -950,15 +947,16 @@ class StreamlitDashboard:
             '<span style="visibility:hidden; position: absolute; right: 32px;">placeholder</span>'
         )
         st.markdown(f"""
-<div style="position: relative; width: 100vw; z-index: 3000;">
-    <div class="main-title bounce" style="display: flex; align-items: center; justify-content: center; position: relative;">
-        <span style="font-size:2.8rem; font-family:'Inter', sans-serif; font-weight:700; color:#059669; letter-spacing:0.02em; flex: 1; text-align: center;">
-            Live Cash Strategy Dashboard
-        </span>
-        {right_box}
-    </div>
-</div>
+        <div style="position: relative; width: 100vw; z-index: 3000;">
+            <div class="main-title bounce" style="display: flex; align-items: center; justify-content: center; position: relative;">
+                <span style="font-size:2.8rem; font-family:'Inter', sans-serif; font-weight:700; color:#059669; letter-spacing:0.02em; flex: 1; text-align: center;">
+                    Live Cash Strategy Dashboard
+                </span>
+                {right_box}
+            </div>
+        </div>
 """, unsafe_allow_html=True)
+
 
         # Initialize strategy
         # strategy = CashStrategy(mongo_uri=mongo_uri) # This line is removed as per the new_code
@@ -1068,9 +1066,38 @@ class StreamlitDashboard:
                 unsafe_allow_html=True
             )
             st.markdown('<div style="height: 80px;"></div>', unsafe_allow_html=True)  # Spacer to prevent overlap
-
+          
             # --- Analytics Section (all statistics as KPI cards) ---
-            st.markdown('<div style="text-align:center; margin-top: 0px;" class="section-heading">Analytics</div>', unsafe_allow_html=True)
+            col1, col2 = st.columns([10.5, 1])
+            with col1:
+                st.markdown('<div style="text-align:center; margin-top: 0px;" class="section-heading"></div>', unsafe_allow_html=True)
+            with col2:
+                _refresh_button = st.button("Refresh Data", key="float_refresh", help="Reload data")
+            if _refresh_button or (st.session_state.client_id_input and not st.session_state.data_fetched):
+                with st.spinner("Loading data..."):
+                    client_ids = [cid.strip() for cid in st.session_state.client_id_input.split(",") if cid.strip()]
+                    if not client_ids:
+                        st.warning("Please enter at least one valid Client ID.")
+                        await self.close() # Changed from await strategy.close()
+                        return
+
+                    filtered_df, stats_df, total_fund, error = await self.fetch_and_process_data(client_ids, None) # Changed from fetch_and_process_data(strategy, client_ids, None)
+                    if error:
+                        st.error(error)
+                        await self.close() # Changed from await strategy.close()
+                        return
+
+                    st.session_state.data_fetched = True
+                    st.session_state.filtered_df = filtered_df
+                    st.session_state.stats_df = stats_df
+                    st.session_state.total_fund = total_fund
+
+            # st.markdown('<div style="text-align:center; margin-top: 0px;" class="section-heading">Analytics</div>', unsafe_allow_html=True)
+            st.markdown("""
+            <div style="text-align:center;">
+                <div class="section-heading" style="margin-top:0.001rem; margin-bottom:0.5rem;">Analytics</div>
+            </div>
+            """, unsafe_allow_html=True)
             if stats_df.empty:
                 st.warning("No statistics data available for the selected filters.")
             else:
