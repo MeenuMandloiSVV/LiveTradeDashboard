@@ -97,7 +97,7 @@ class StreamlitDashboard:
 
     async def fetch_ltp(self, token: str, instrument: str = None) -> tuple[float, float]:
         try:
-            ltp_doc = await self.db["LiveLtp"].find_one({"ExchangeInstrumentID": int(token)})
+            ltp_doc = await self.db["LiveLtp"].find_one({"ExchangeInstrumentID": str(token)})
             if ltp_doc:
                 ltp = ltp_doc.get("LastTradedPrice", float('nan'))
                 close = ltp_doc.get("Close", float('nan'))
