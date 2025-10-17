@@ -21,7 +21,6 @@ logger = logging.getLogger(__name__)
 # MongoDB URI
 mongo_uri = st.secrets["mongo"]["uri"]
 
-
 class LoginRateLimiter:
     def __init__(self):
         self.attempts = {}
@@ -97,7 +96,7 @@ class StreamlitDashboard:
 
     async def fetch_ltp(self, token: str, instrument: str = None) -> tuple[float, float]:
         try:
-            ltp_doc = await self.db["LiveLtp"].find_one({"ExchangeInstrumentID": str(token)})
+            ltp_doc = await self.db["LiveLtp"].find_one({"ExchangeInstrumentID": int(token)})
             if ltp_doc:
                 ltp = ltp_doc.get("LastTradedPrice", float('nan'))
                 close = ltp_doc.get("Close", float('nan'))
@@ -131,7 +130,7 @@ class StreamlitDashboard:
             total_turnover = buy_turnover + sell_turnover
             output_df["Profit"] = output_df.apply(
                 lambda row: (
-                    (row["LTP"] - (np.mean(row["BuyPrice"]) if row["BuyPrice"] else 0)) * row["RemainingQty"]
+                    (row["LTP"] - (np.mean(row["BuyPrice"]) if row["BuyPrice"] else 0)) * (sum(row["EnQty"]) if row["EnQty"] else 0)
                     + sum((p_s - p_b) * q for p_s, p_b, q in zip(row["SellPrice"], row["BuyPrice"], row["ExQty"]) if p_s and p_b and q)
                     if not pd.isna(row["LTP"])
                     else sum((p_s - p_b) * q for p_s, p_b, q in zip(row["SellPrice"], row["BuyPrice"], row["ExQty"]) if p_s and p_b and q)
@@ -141,7 +140,10 @@ class StreamlitDashboard:
                     (row["LTP"] - (np.mean(row["BuyPrice"]) if row["BuyPrice"] else 0)) * row["RemainingQty"]
                     if not pd.isna(row["LTP"]) else 0
                 ), axis=1)
+                 
             profits = output_df["Profit"]
+            output_df["BuyPriceAvg"] = output_df["BuyPrice"].apply(lambda x: round(np.mean(x), 2) if x else np.nan)
+            output_df["SellPriceAvg"] = output_df["SellPrice"].apply(lambda x: round(np.mean(x),2) if x else np.nan)
             profit_trades = profits[profits >= 0]
             loss_trades = profits[profits < 0]
             stats = {
@@ -1045,7 +1047,7 @@ class StreamlitDashboard:
                 return
 
             display_columns = [
-                "StrategyID", "Symbol", "Pos","Profit & Loss","Yesterday's PNL","BuyPrice", "SellPrice", "LTP","Close","Qty", "Instrument", "Option", "Strike", "ExpiryDT",
+                "StrategyID", "Symbol", "Pos","Profit & Loss","Yesterday's PNL","BuyPriceAvg","SellPriceAvg","BuyPrice", "SellPrice", "LTP","Close","Qty", "Instrument", "Option", "Strike", "ExpiryDT",
                "ClientID"
             ]
             missing_cols = [col for col in display_columns if col not in filtered_df.columns and col != "Profit & Loss"]
@@ -1164,6 +1166,8 @@ class StreamlitDashboard:
                 return str(lst) if not pd.isna(lst) else "-"
             filtered_display_df["BuyPrice"] = filtered_display_df["BuyPrice"].apply(format_list_to_string)
             filtered_display_df["SellPrice"] = filtered_display_df["SellPrice"].apply(format_list_to_string)
+            filtered_display_df["BuyPriceAvg"] = filtered_display_df["BuyPriceAvg"].apply(format_list_to_string)
+            filtered_display_df["SellPriceAvg"] = filtered_display_df["SellPriceAvg"].apply(format_list_to_string)
             filtered_display_df["Strike"] = filtered_display_df["Strike"].apply(lambda x: f"{x:.2f}" if isinstance(x, (int, float)) and not pd.isna(x) else "-")
             filtered_display_df["Close"] = filtered_display_df["Close"].apply(lambda x: f"{x:.2f}" if isinstance(x, (int, float)) and not pd.isna(x) else "-")
             filtered_display_df["Yesterday's PNL"] = filtered_display_df["Yesterday's PNL"].apply(lambda x: f"{x:.2f}" if isinstance(x, (int, float)) and not pd.isna(x) else "-")
@@ -1212,6 +1216,8 @@ class StreamlitDashboard:
     """), cellClass="bounce-on-hover")
             gb.configure_column("BuyPrice", minWidth=120, maxWidth=150, cellClass="bounce-on-hover")
             gb.configure_column("SellPrice", minWidth=120, maxWidth=150, cellClass="bounce-on-hover")
+            gb.configure_column("BuyPriceAvg", minWidth=120, maxWidth=150, cellClass="bounce-on-hover")
+            gb.configure_column("SellPriceAvg", minWidth=120, maxWidth=150, cellClass="bounce-on-hover")  
             gb.configure_column("LTP", minWidth=100, maxWidth=120, cellClass="bounce-on-hover")
             gb.configure_column("CLose", minWidth=100, maxWidth=120, cellClass="bounce-on-hover")
 
