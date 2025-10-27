@@ -94,42 +94,41 @@ class StreamlitDashboard:
         self.rate_limiter = LoginRateLimiter()
         logger.info("Initialized StreamlitDashboard for dashboard")
 
-    async def fetch_ltp(self, token: str, strategy_id: str, client_id: str, instrument: str = None) -> tuple[float, float]:        
+
+    async def fetch_ltp(self, token: str, strategy_id: str, client_id: str, instrument: str = None) -> tuple[float, float]:
         try:
             ltp = float('nan')
             close = float('nan')
             
-            # ALWAYS fetch LTP (and initial Close fallback) from LiveLtp first
+            # First: Try to get Close from PrevClose in strategies trade data
+            try:
+                prev_close_doc = await self.position_col.find_one(
+                    {
+                        "ExchangeInstrumentID": int(token),
+                        "StrategyID": strategy_id
+                    },
+                    {"PrevClose": 1}
+                )
+                if prev_close_doc and "PrevClose" in prev_close_doc and not pd.isna(prev_close_doc["PrevClose"]):
+                    close = prev_close_doc["PrevClose"]
+                    logger.info(f"Fetched Close {close} from PrevClose in Strategies_Trade_Data for token {token} (strategy: {strategy_id})")
+                else:
+                    logger.info(f"No valid PrevClose found in trade data for token {token} (strategy: {strategy_id}); will fallback to LiveLtp for Close")
+            except Exception as e:
+                logger.error(f"Error fetching PrevClose for token {token}, strategy {strategy_id}: {e}")
+            
+            # Always fetch LTP from LiveLtp (and Close fallback if needed)
             ltp_doc = await self.db["LiveLtp"].find_one({"ExchangeInstrumentID": int(token)})
             if ltp_doc:
                 ltp = ltp_doc.get("LastTradedPrice", float('nan'))
-                logger.info(f"Fetched LTP {ltp}from LiveLtp for token {token}")
+                if pd.isna(close):  # Only override if no PrevClose was set
+                    close = ltp_doc.get("Close", float('nan'))
+                    logger.info(f"Fetched LTP {ltp} and Close {close} from LiveLtp for token {token}")
+                else:
+                    logger.info(f"Fetched LTP {ltp} from LiveLtp for token {token} (using PrevClose for Close)")
             else:
                 logger.warning(f"No LiveLtp data found for token {token}")
             
-            if client_id == "NR99":
-                try:
-                    prev_close_doc = await self.position_col.find_one(
-                        {
-                            "Identifier": {"$regex": "^NR99"},
-                            "ExchangeInstrumentID": int(token),
-                            "StrategyID": strategy_id
-                        },
-                        {"PrevClose": 1}
-                    )
-                    if prev_close_doc and "PrevClose" in prev_close_doc and not pd.isna(prev_close_doc["PrevClose"]):
-                        close = prev_close_doc["PrevClose"]
-                        logger.info(f"Overrode Close with PrevClose {close} from Strategies_Trade_Data for token {token} (strategy: {strategy_id})")
-                    else:
-                        logger.info(f"No matching PrevClose found in trade data for token {token} (strategy: {strategy_id})")
-                except Exception as e:
-                    logger.error(f"Error fetching PrevClose for token {token}, strategy {strategy_id}: {e}")
-                    # Keep LiveLtp close as fallback—no change
-            else:         
-                ltp_doc = await self.db["LiveLtp"].find_one({"ExchangeInstrumentID": int(token)})
-                close = ltp_doc.get("Close", float('nan'))
-
-
             # Ensure close is a numeric float (handles any lingering NaNs or non-numeric)
             if pd.isna(close) or not isinstance(close, (int, float)):
                 close = float('nan')
