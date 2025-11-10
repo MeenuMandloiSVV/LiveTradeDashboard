@@ -1245,7 +1245,7 @@ class StreamlitDashboard:
             }
             return {};
         }
-    """), cellClass="bounce-on-hover")
+    """), cellClass="bounce-on-hover",pinned='left')
             gb.configure_column("BuyPrice", minWidth=120, maxWidth=150, cellClass="bounce-on-hover")
             gb.configure_column("SellPrice", minWidth=120, maxWidth=150, cellClass="bounce-on-hover")
             gb.configure_column("BuyPriceAvg", minWidth=120, maxWidth=150, cellClass="bounce-on-hover")
