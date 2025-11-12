@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 # MongoDB URI
 mongo_uri = st.secrets["mongo"]["uri"]
 
+
 class LoginRateLimiter:
     def __init__(self):
         self.attempts = {}
