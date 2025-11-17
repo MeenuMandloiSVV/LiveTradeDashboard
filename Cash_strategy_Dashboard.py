@@ -19,9 +19,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # MongoDB URI
-mongo_uri = st.secrets["mongo"]["uri"]
-
-
+# mongo_uri = st.secrets["mongo"]["uri"]
 class LoginRateLimiter:
     def __init__(self):
         self.attempts = {}
@@ -85,7 +83,7 @@ class Authentication:
 
 class StreamlitDashboard:
     def __init__(self, mongo_uri: str):
-        self.date = datetime.now(pytz.timezone("Asia/Kolkata")).strftime("%Y-%m-%d %I:%M %p IST")
+        self.date = datetime.now(pytz.timezone("Asia/Kolkata")).strftime("%Y-%m-%d %I:%M %p")
         self.token_list = []
         self.file_lock = Lock()
         self.mongo_client = motor.motor_asyncio.AsyncIOMotorClient(mongo_uri)
@@ -237,6 +235,10 @@ class StreamlitDashboard:
 
             all_positions["ClientID"] = all_positions["Identifier"].apply(extract_client_id)
             all_positions["StrategyID"] = all_positions["StrategyID"].astype(str)
+            all_positions["MaxHigh"]=all_positions["MaxHigh"].astype(str)
+            all_positions["StopLoss"] = all_positions["StopLoss"].apply(
+lambda x: f"{x:.2f}" if pd.notna(x) else "-")
+
             client_df = all_positions[all_positions["ClientID"].isin(client_ids)]
             if client_df.empty:
                 return None, None, None, "No data found for the entered Client IDs."
@@ -479,7 +481,6 @@ class StreamlitDashboard:
 
         # --- Auto-refresh every 1 minute (60 seconds) ---
         # (Removed manual timer and rerun logic)
-        
         # Updated CSS with enhanced title visibility and table alignment
         st.markdown("""
         <style>
@@ -998,11 +999,14 @@ class StreamlitDashboard:
 
         # Header with fixed main title and User info on the right
         user_info = f' Client ID: {st.session_state.get("client_id_input", "")}'
+
         right_box = (
             f'<span style="position: absolute; right: 32px; font-size: 0.9rem; font-weight: 500; color: #111827; background: var(--secondary-background-color); border: 1.5px solid var(--border-color); border-radius: 8px; padding: 6px 14px; box-shadow: var(--card-shadow);">{user_info}</span>'
             if st.session_state.get('user_id') else
             '<span style="visibility:hidden; position: absolute; right: 32px;">placeholder</span>'
         )
+        date_box = f'<span style="position: absolute; right: 32px; top: 60px; font-size: 0.85rem; font-weight: 400; color: #111827; background: var(--secondary-background-color); border: 1px solid var(--border-color); border-radius: 8px; padding: 4px 12px; box-shadow: var(--card-shadow);">{self.date}</span>' if st.session_state.get('user_id') else ''
+
         st.markdown(f"""
         <div style="position: relative; width: 100vw; z-index: 3000;">
             <div class="main-title bounce" style="display: flex; align-items: center; justify-content: center; position: relative;">
@@ -1010,9 +1014,11 @@ class StreamlitDashboard:
                     Live Cash Strategy Dashboard
                 </span>
                 {right_box}
-            </div>
+                {date_box} 
+            </div>           
         </div>
 """, unsafe_allow_html=True)
+        
 
 
         # Initialize strategy
@@ -1081,8 +1087,10 @@ class StreamlitDashboard:
 
             display_columns = [
                 "StrategyID", "Symbol", "Pos","Profit & Loss","Yesterday's PNL","BuyPriceAvg","SellPriceAvg","BuyPrice", "SellPrice", "LTP","Close","Qty", "Instrument", "Option", "Strike", "ExpiryDT",
-               "ClientID"
+               "ClientID","StopLoss"
             ]
+            if "MaxHigh" in filtered_df.columns and any(filtered_df["StrategyID"] == "CST0002"):
+                display_columns.insert(display_columns.index("Qty") + 1, "MaxHigh")
             missing_cols = [col for col in display_columns if col not in filtered_df.columns and col != "Profit & Loss"]
             if missing_cols:
                 st.error(f"Missing columns: {missing_cols}")
@@ -1157,6 +1165,7 @@ class StreamlitDashboard:
                 <div class="section-heading" style="margin-top:0.001rem; margin-bottom:0.5rem;">Analytics</div>
             </div>
             """, unsafe_allow_html=True)
+
             if stats_df.empty:
                 st.warning("No statistics data available for the selected filters.")
             else:
@@ -1205,6 +1214,9 @@ class StreamlitDashboard:
             filtered_display_df["Close"] = filtered_display_df["Close"].apply(lambda x: f"{x:.2f}" if isinstance(x, (int, float)) and not pd.isna(x) else "-")
             filtered_display_df["Yesterday's PNL"] = filtered_display_df["Yesterday's PNL"].apply(lambda x: f"{x:.2f}" if isinstance(x, (int, float)) and not pd.isna(x) else "-")
             filtered_display_df["ExpiryDT"] = filtered_display_df["ExpiryDT"].astype(str)
+            filtered_display_df["StopLoss"] = filtered_display_df["StopLoss"].apply(format_list_to_string)
+            filtered_display_df["MaxHigh"] = filtered_display_df["MaxHigh"].apply(format_list_to_string)
+   
             # --- Force Pos column sorted as: open → close ---
             # Create a helper column for sorting
             filtered_display_df["PosOrder"] = filtered_display_df["Pos"].map({"open": 0, "close": 1}).fillna(2)
@@ -1252,7 +1264,8 @@ class StreamlitDashboard:
             gb.configure_column("BuyPriceAvg", minWidth=120, maxWidth=150, cellClass="bounce-on-hover")
             gb.configure_column("SellPriceAvg", minWidth=120, maxWidth=150, cellClass="bounce-on-hover")  
             gb.configure_column("LTP", minWidth=100, maxWidth=120, cellClass="bounce-on-hover")
-            gb.configure_column("CLose", minWidth=100, maxWidth=120, cellClass="bounce-on-hover")
+            gb.configure_column("Close", minWidth=100, maxWidth=120, cellClass="bounce-on-hover")
+            gb.configure_column("StopLoss", minWidth=100, maxWidth=120, cellClass="bounce-on-hover")
 
             gb.configure_column("Qty", minWidth=100, maxWidth=120, cellClass="bounce-on-hover")
             grid_options = gb.build()
