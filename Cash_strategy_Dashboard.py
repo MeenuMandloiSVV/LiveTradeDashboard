@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 # MongoDB URI
 mongo_uri = st.secrets["mongo"]["uri"]
+
 class LoginRateLimiter:
     def __init__(self):
         self.attempts = {}
@@ -171,8 +172,13 @@ class StreamlitDashboard:
                     (row["LTP"] - (np.mean(row["BuyPrice"]) if row["BuyPrice"] else 0)) * row["RemainingQty"]
                     if not pd.isna(row["LTP"]) else 0
                 ), axis=1)
-                 
             profits = output_df["Profit"]
+            output_df["Pos"] = output_df["Pos"].str.lower()   # Converts all values in 'Pos' column to lowercase
+            open_positions = output_df[output_df["Pos"] == "open"]  # Filters only rows where Pos is 'open'
+            close_positions=output_df[output_df["Pos"]== "close"]
+            open_profit_sum = open_positions["Profit"].sum()
+            close_positions_sum=close_positions["Profit"].sum()
+
             output_df["BuyPriceAvg"] = output_df["BuyPrice"].apply(lambda x: round(np.mean(x), 2) if x else np.nan)
             output_df["SellPriceAvg"] = output_df["SellPrice"].apply(lambda x: round(np.mean(x),2) if x else np.nan)
             profit_trades = profits[profits >= 0]
@@ -183,7 +189,10 @@ class StreamlitDashboard:
                 "Number of Closed Positions": output_df["Pos"].value_counts().get("close", 0),
                 "Total Profit": profit_trades.sum(),
                 "Total Loss": loss_trades.sum(),
+                "Open Pos P&L":open_profit_sum,
+                "Close Pos P&L":close_positions_sum,
                 "Overall Profit": profits.sum(),
+                "Yesterday's PNL":round(output_df["Yesterday's PNL"].sum(), 2),
                 "Profit Positions": len(profit_trades),
                 "Loss Positions": len(loss_trades),
                 "Avg Profit": profit_trades.mean() if len(profit_trades) > 0 else 0,
@@ -308,7 +317,6 @@ lambda x: f"{x:.2f}" if pd.notna(x) else "-")
             # Ensure non-negative scalar
             total_fund = max(0.0, float(total_fund))
 
-            filtered_df, stats_df = await self.stats_calculation(filtered_df, total_fund)
             def calculate_yesterdays_pnl(row):
                 if row["Pos"] == "open":
                     close = row.get("Close", np.nan)
@@ -320,6 +328,9 @@ lambda x: f"{x:.2f}" if pd.notna(x) else "-")
                 else:
                     return row.get("Profit", np.nan)
             filtered_df["Yesterday's PNL"] = filtered_df.apply(calculate_yesterdays_pnl, axis=1)
+
+            filtered_df, stats_df = await self.stats_calculation(filtered_df, total_fund)
+            
 
             def extract_entry_date(row):
                 en_dtime = row.get("EnDTime", None)
@@ -1086,11 +1097,11 @@ lambda x: f"{x:.2f}" if pd.notna(x) else "-")
                 return
 
             display_columns = [
-                "StrategyID", "Symbol", "Pos","Profit & Loss","Yesterday's PNL","BuyPriceAvg","SellPriceAvg","BuyPrice", "SellPrice", "LTP","Close","Qty", "Instrument", "Option", "Strike", "ExpiryDT",
-               "ClientID","StopLoss"
+                "StrategyID", "Symbol", "Pos","Profit & Loss","Yesterday's PNL","BuyPriceAvg","SellPriceAvg","BuyPrice", "SellPrice", "LTP","StopLoss","Close","Qty", "Instrument", "Option", "Strike", "ExpiryDT",
+               "ClientID"
             ]
             if "MaxHigh" in filtered_df.columns and any(filtered_df["StrategyID"] == "CST0002"):
-                display_columns.insert(display_columns.index("Qty") + 1, "MaxHigh")
+                display_columns.insert(display_columns.index("StopLoss") + 1, "MaxHigh")
             missing_cols = [col for col in display_columns if col not in filtered_df.columns and col != "Profit & Loss"]
             if missing_cols:
                 st.error(f"Missing columns: {missing_cols}")
