@@ -1,3 +1,4 @@
+
 import asyncio 
 import pandas as pd
 import numpy as np
@@ -13,6 +14,7 @@ from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
 from st_aggrid.shared import JsCode
 import plotly.colors
 import time
+import random
 # from streamlit_autorefresh import st_autorefresh
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -84,7 +86,7 @@ class Authentication:
 
 class StreamlitDashboard:
     def __init__(self, mongo_uri: str):
-        self.date = datetime.now(pytz.timezone("Asia/Kolkata")).strftime("%Y-%m-%d %I:%M %p")
+        self.date = datetime.now(pytz.timezone("Asia/Kolkata")).strftime("%d-%m-%Y %I:%M %p")
         self.token_list = []
         self.file_lock = Lock()
         self.mongo_client = motor.motor_asyncio.AsyncIOMotorClient(mongo_uri)
@@ -160,27 +162,26 @@ class StreamlitDashboard:
             buy_turnover = sum(sum(p * q for p, q in zip(row["BuyPrice"], row["EnQty"]) if p and q) for _, row in output_df.iterrows())
             sell_turnover = sum(sum(p * q for p, q in zip(row["SellPrice"], row["ExQty"]) if p and q) for _, row in output_df.iterrows())
             total_turnover = buy_turnover + sell_turnover
-            output_df["Profit"] = output_df.apply(
-                lambda row: (
-                    (row["LTP"] - (np.mean(row["BuyPrice"]) if row["BuyPrice"] else 0)) * (sum(row["EnQty"]) if row["EnQty"] else 0)
-                    + sum((p_s - p_b) * q for p_s, p_b, q in zip(row["SellPrice"], row["BuyPrice"], row["ExQty"]) if p_s and p_b and q)
-                    if not pd.isna(row["LTP"])
-                    else sum((p_s - p_b) * q for p_s, p_b, q in zip(row["SellPrice"], row["BuyPrice"], row["ExQty"]) if p_s and p_b and q)
-                ), axis=1)
+
+
+            output_df["BuyPriceAvg"] = output_df.apply( lambda row: round( sum(p * q for p, q in zip(row["BuyPrice"], row["EnQty"])) / sum(row["EnQty"]) , 2 ) if row["BuyPrice"] and row["EnQty"] and sum(row["EnQty"]) > 0 else np.nan, axis=1 )
+            output_df["SellPriceAvg"] = output_df["SellPrice"].apply(lambda x: round(np.mean(x),2) if x else np.nan)
+            output_df["Profit"] = output_df.apply( lambda row: ( (row["LTP"] - row["BuyPriceAvg"]) * (sum(row["EnQty"]) if row["EnQty"] else 0) + sum((p_s - p_b) * q for p_s, p_b, q in zip(row["SellPrice"], row["BuyPrice"], row["ExQty"]) if p_s and p_b and q) if not pd.isna(row["LTP"]) else sum((p_s - p_b) * q for p_s, p_b, q in zip(row["SellPrice"], row["BuyPrice"], row["ExQty"]) if p_s and p_b and q) ), axis=1 )
             output_df["UnrealisedMTM"] = output_df.apply(
                 lambda row: (
                     (row["LTP"] - (np.mean(row["BuyPrice"]) if row["BuyPrice"] else 0)) * row["RemainingQty"]
                     if not pd.isna(row["LTP"]) else 0
                 ), axis=1)
             profits = output_df["Profit"]
+
+
             output_df["Pos"] = output_df["Pos"].str.lower()   # Converts all values in 'Pos' column to lowercase
             open_positions = output_df[output_df["Pos"] == "open"]  # Filters only rows where Pos is 'open'
             close_positions=output_df[output_df["Pos"]== "close"]
             open_profit_sum = open_positions["Profit"].sum()
             close_positions_sum=close_positions["Profit"].sum()
 
-            output_df["BuyPriceAvg"] = output_df["BuyPrice"].apply(lambda x: round(np.mean(x), 2) if x else np.nan)
-            output_df["SellPriceAvg"] = output_df["SellPrice"].apply(lambda x: round(np.mean(x),2) if x else np.nan)
+          
             profit_trades = profits[profits >= 0]
             loss_trades = profits[profits < 0]
             stats = {
@@ -218,6 +219,118 @@ class StreamlitDashboard:
             except Exception:
                 pass
             return output_df, pd.DataFrame()
+        
+    def render_candlestick_background(self, num_candles=60):
+        candles_html = ""
+        # We create a sequence of candles that look like a "trend"
+        current_trend = 50 
+        
+        for _ in range(num_candles):
+            # Professional trading candles aren't random; they follow a path
+            change = random.randint(-15, 15)
+            height = abs(change) * 5 + 20
+            bottom_pos = current_trend + change
+            current_trend = bottom_pos
+            
+            # Color based on whether the "price" went up or down
+            color_class = "green" if change > 0 else "red"
+            delay = random.uniform(0, 2) # Slight variation for realism
+
+            candles_html += f"""
+            <div class="candle {color_class}" style="
+                height:{height}px;
+                bottom:{bottom_pos}px;
+                animation-delay:-{delay}s;
+            ">
+                <div class="wick"></div>
+            </div>
+            """
+
+        st.markdown(
+            f"""
+            <style>
+            @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap');
+
+            body {{
+                background-color: #060d0e; /* Deep Charcoal/Black */
+            }}
+
+            /* The Moving Track */
+            .candle-container {{
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: 200%; /* Extra width for seamless scroll */
+                height: 100%;
+                overflow: hidden;
+                z-index: 0;
+                display: flex;
+                align-items: flex-end;
+                gap: 12px;
+                padding-bottom: 10%;
+                opacity: 0.7; /* Subtle background look */
+                animation: marketMove 40s linear infinite;
+            }}
+
+            .candle {{
+                position: relative;
+                width: 14px;
+                border-radius: 2px;
+                transition: all 0.3s ease;
+            }}
+
+            /* TradingView Style Wick (The thin line) */
+            .wick {{
+                position: absolute;
+                left: 50%;
+                top: -10px;
+                bottom: -10px;
+                width: 2px;
+                transform: translateX(-50%);
+                background: inherit;
+                opacity: 0.6;
+            }}
+
+            .green {{
+                background: #26a69a; /* TradingView Green */
+                box-shadow: 0 0 10px rgba(38, 166, 154, 0.4);
+            }}
+
+            .red {{
+                background: #ef5350; /* TradingView Red */
+                box-shadow: 0 0 10px rgba(239, 83, 80, 0.4);
+            }}
+
+            /* The market scrolling animation */
+            @keyframes marketMove {{
+                0% {{ transform: translateX(0); }}
+                100% {{ transform: translateX(-50%); }}
+            }}
+
+            .login-box {{
+                position: relative;
+                z-index: 10;
+                background: rgba(19, 23, 34, 0.95); /* TradingView Dark Panel */
+                padding: 40px;
+                border-radius: 16px;
+                border: 1px solid #2a2e39;
+                box-shadow: 0 20px 50px rgba(0,0,0,0.5);
+                max-width: 420px;
+                margin: auto;
+                margin-top: 15vh;
+                font-family: 'Inter', sans-serif;
+                text-align: center;
+            }}
+            </style>
+
+            <div class="candle-container">
+                {candles_html}
+                {candles_html} </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
 
     async def fetch_all_positions(self):
         logger.info("Fetching all positions from MongoDB")
@@ -258,7 +371,15 @@ lambda x: f"{x:.2f}" if pd.notna(x) else "-")
 
             # Create a copy to avoid SettingWithCopyWarning
             filtered_df = filtered_df.copy()
+            # ---- Ensure GradeScore column ----
+            if "GradeScore" not in filtered_df.columns:
+                filtered_df["GradeScore"] = np.nan
+            else:
+                filtered_df["GradeScore"] = pd.to_numeric(
+                    filtered_df["GradeScore"], errors="coerce"
+                )
 
+            filtered_df = filtered_df.rename( columns={ "EnDTime": "EnDate", "ExDTime": "ExDate" } )
             async def return_value(val):
                 return val
 
@@ -276,7 +397,15 @@ lambda x: f"{x:.2f}" if pd.notna(x) else "-")
             ltp_close = await get_ltp_list(filtered_df)
             filtered_df["LTP"] = ltp_close[0]
             filtered_df["Close"] = ltp_close[1]
+            # ---- Convert to numeric (important: Mongo gives strings) ----
+            filtered_df["StopLoss"] = pd.to_numeric(filtered_df["StopLoss"], errors="coerce")
+            filtered_df["LTP"] = pd.to_numeric(filtered_df["LTP"], errors="coerce")
 
+            # ---- LTP vs SL % difference (PURE FORMULA, NO CHECK) ----
+            filtered_df["LTP_SL_%"] = (
+                (filtered_df["LTP"] - filtered_df["StopLoss"]) / filtered_df["StopLoss"] * 100
+            ).round(2)
+           
 
 
             
@@ -333,7 +462,7 @@ lambda x: f"{x:.2f}" if pd.notna(x) else "-")
             
 
             def extract_entry_date(row):
-                en_dtime = row.get("EnDTime", None)
+                en_dtime = row.get("EnDate", None)
                 if isinstance(en_dtime, list) and len(en_dtime) > 0:
                     date_str = en_dtime[0]
                 elif isinstance(en_dtime, str):
@@ -399,6 +528,8 @@ lambda x: f"{x:.2f}" if pd.notna(x) else "-")
         return fig
 
     async def show_login_page(self):
+
+        self.render_candlestick_background(40)
         st.markdown("""
         <div style="text-align:center; margin-top:10px;">
             <h1 style="color:#059669; font-size:2.5rem; font-family:'Inter', sans-serif;">Live Cash Strategy Dashboard</h1>
@@ -1059,6 +1190,42 @@ lambda x: f"{x:.2f}" if pd.notna(x) else "-")
             filtered_df = st.session_state.filtered_df
             stats_df = st.session_state.stats_df
             total_fund = st.session_state.total_fund
+            
+            # --- Fetch and Merge Sector Data ---
+            try:
+                if "sector_data" not in st.session_state:
+                     import requests
+                     response = requests.get("https://admin.stocksemoji.com/api/indira-cmots/CompanyMaster")
+                     if response.status_code == 200:
+                         api_data = response.json()
+                         if api_data.get("success") and api_data.get("data"):
+                             sector_df = pd.DataFrame(api_data["data"])
+                             # Keep only necessary columns to save memory
+                             if "nsesymbol" in sector_df.columns and "sectorname" in sector_df.columns:
+                                  st.session_state.sector_data = sector_df[["nsesymbol", "sectorname"]]
+                             else:
+                                  st.session_state.sector_data = pd.DataFrame()
+                     else:
+                          st.session_state.sector_data = pd.DataFrame()
+                
+                sector_map_df = st.session_state.get("sector_data", pd.DataFrame())
+                if not sector_map_df.empty:
+                     # Merge sectorname into filtered_df based on Symbol == nsesymbol
+                     # Ensure we don't duplicate columns if Sector already exists
+                     if "Sector" in filtered_df.columns:
+                         filtered_df = filtered_df.drop(columns=["Sector"])
+                     
+                     filtered_df = pd.merge(
+                         filtered_df, 
+                         sector_map_df.rename(columns={"nsesymbol": "Symbol", "sectorname": "Sector"}), 
+                         on="Symbol", 
+                         how="left"
+                     )
+                     # Update session state with the new dataframe containing Sector
+                     st.session_state.filtered_df = filtered_df
+            except Exception as e:
+                logger.error(f"Error fetching/merging sector data: {e}")
+
 
             # Always update strategy_ids and selectbox based on filtered_df
             strategy_ids = sorted(pd.Series(filtered_df["StrategyID"]).dropna().unique())
@@ -1089,6 +1256,28 @@ lambda x: f"{x:.2f}" if pd.notna(x) else "-")
                 st.session_state.filtered_df = filtered_df
                 st.session_state.stats_df = stats_df
                 st.session_state.total_fund = total_fund
+                st.session_state.total_fund = total_fund
+            
+            # PostExit_Return calculation moved here to ensure it exists before display_columns check
+            def calc_post_exit(row):
+                try:
+                    sp_avg = row.get("SellPriceAvg")
+                    close = row.get("Close")
+                    
+                    if isinstance(sp_avg, list): sp_avg = sp_avg[0] if len(sp_avg) > 0 else 0
+                    if isinstance(close, list): close = close[0] if len(close) > 0 else 0
+                    
+                    sp_val = float(sp_avg)
+                    close_val = float(close)
+                    
+                    if sp_val > 0:
+                        return round(((close_val - sp_val) / sp_val) * 100, 2)
+                    return "-"
+                except Exception:
+                    return "-"
+            
+            if "SellPriceAvg" in filtered_df.columns and "Close" in filtered_df.columns:
+                filtered_df["PostExit_Return"] = filtered_df.apply(calc_post_exit, axis=1)
 
             if "Profit" not in filtered_df.columns:
                 st.error(f"Profit column is missing. Available columns: {filtered_df.columns.tolist()}")
@@ -1097,12 +1286,13 @@ lambda x: f"{x:.2f}" if pd.notna(x) else "-")
                 return
 
             display_columns = [
-                "StrategyID", "Symbol", "Pos","Profit & Loss","Yesterday's PNL","BuyPriceAvg","SellPriceAvg","BuyPrice", "SellPrice", "LTP","StopLoss","Close","Qty", "Instrument", "Option", "Strike", "ExpiryDT",
-               "ClientID"
+                "StrategyID", "Symbol", "Pos", "GradeScore","Profit & Loss","Yesterday's PNL","BuyPriceAvg","SellPriceAvg","EnDate","BuyPrice", "SellPrice", "LTP","LTP_SL_%","StopLoss","SL_Trigger_PnL","Close","Qty", "Instrument", "Option", "Strike","ExDate","ClientID","Sector","PostExit_Return"
             ]
             if "MaxHigh" in filtered_df.columns and any(filtered_df["StrategyID"] == "CST0002"):
                 display_columns.insert(display_columns.index("StopLoss") + 1, "MaxHigh")
-            missing_cols = [col for col in display_columns if col not in filtered_df.columns and col != "Profit & Loss"]
+            if "BPavgtoMaxHigh%" in filtered_df.columns and any(filtered_df["StrategyID"] == "CST0002"):
+                display_columns.insert(display_columns.index("Qty") + 1, "BPavgtoMaxHigh%")     
+            missing_cols = [ col for col in display_columns if col not in filtered_df.columns and col not in ["Profit & Loss", "SL_Trigger_PnL", "BPavgtoMaxHigh%", "PostExit_Return"] ]
             if missing_cols:
                 st.error(f"Missing columns: {missing_cols}")
                 st.dataframe(filtered_df.head())
@@ -1176,6 +1366,73 @@ lambda x: f"{x:.2f}" if pd.notna(x) else "-")
                 <div class="section-heading" style="margin-top:0.001rem; margin-bottom:0.5rem;">Analytics</div>
             </div>
             """, unsafe_allow_html=True)
+            try:
+                # Helper to handle list or scalar
+                def get_scalar_val(val):
+                    if isinstance(val, list):
+                        return val[0] if len(val) > 0 else np.nan
+                    return val
+
+                calc_df = filtered_df.copy()
+                calc_df["LTP_numeric"] = pd.to_numeric(calc_df["LTP"], errors='coerce')
+                calc_df["Close_numeric"] = pd.to_numeric(calc_df["Close"], errors='coerce')
+                calc_df["BuyPriceAvg_numeric"] = calc_df["BuyPriceAvg"].apply(
+                    lambda x: pd.to_numeric(get_scalar_val(x), errors='coerce')
+                )
+                
+                # Count LTP > BuyPriceAvg
+                bprice_to_ltp_count = len(calc_df[
+                    (calc_df["LTP_numeric"] > calc_df["BuyPriceAvg_numeric"]) 
+                ])
+                
+                # Count LTP > Close (PrevClose)
+                prevclose_to_ltp_count = len(calc_df[
+                    (calc_df["LTP_numeric"] > calc_df["Close_numeric"])
+                ])
+                
+                # Calculate percentage change
+                calc_df["Pct_Change"] = ((calc_df["LTP_numeric"] - calc_df["Close_numeric"]) / calc_df["Close_numeric"]) * 100
+                
+                # Counts for thresholds
+                up_5_pct = len(calc_df[calc_df["Pct_Change"] >= 5])
+                up_10_pct = len(calc_df[calc_df["Pct_Change"] >= 10])
+                up_20_pct = len(calc_df[calc_df["Pct_Change"] >= 20])
+                
+                down_5_pct = len(calc_df[calc_df["Pct_Change"] <= -5])
+                down_10_pct = len(calc_df[calc_df["Pct_Change"] <= -10])
+                down_20_pct = len(calc_df[calc_df["Pct_Change"] <= -20])
+                
+                # Calculate Total SL Trigger PnL (Sum of (SL - BuyPrice) * Qty)
+                total_sl_pnl = 0
+                for _, row in calc_df.iterrows():
+                    try:
+                        sl = row.get("StopLoss")
+                        bp = row.get("BuyPriceAvg")
+                        qty = row.get("Qty")
+                        
+                        # Handle lists
+                        if isinstance(sl, list): sl = sl[0] if len(sl) > 0 else np.nan
+                        if isinstance(bp, list): bp = bp[0] if len(bp) > 0 else np.nan
+                        if isinstance(qty, list): qty = qty[0] if len(qty) > 0 else np.nan
+                        
+                        if pd.isna(sl) or pd.isna(bp) or pd.isna(qty) or sl in ["-", ""] or bp in ["-", ""] or qty in ["-", ""]:
+                            continue
+                            
+                        # Convert to float
+                        sl_val = float(str(sl).replace(",", "").replace("₹", ""))
+                        bp_val = float(str(bp).replace(",", "").replace("₹", ""))
+                        qty_val = float(str(qty).replace(",", "").replace("₹", ""))
+                        
+                        total_sl_pnl += (sl_val - bp_val) * qty_val
+                    except Exception:
+                        continue
+            except Exception as e:
+                logger.error(f"Error calculating Analytics KPI counts: {e}")
+                bprice_to_ltp_count = 0
+                prevclose_to_ltp_count = 0
+                up_5_pct = up_10_pct = up_20_pct = 0
+                down_5_pct = down_10_pct = down_20_pct = 0
+                total_sl_pnl = 0
 
             if stats_df.empty:
                 st.warning("No statistics data available for the selected filters.")
@@ -1183,6 +1440,7 @@ lambda x: f"{x:.2f}" if pd.notna(x) else "-")
                 stats_list = stats_df.to_dict(orient="records")
                 kpi_html = '<div class="kpi-row small-kpi-row">'
                 for stat in stats_list:
+
                     label = stat["Metric"]
                     value = stat["Value"]
                     # Exclude Investment, Number of Open Positions, Number of Closed Positions
@@ -1199,6 +1457,21 @@ lambda x: f"{x:.2f}" if pd.notna(x) else "-")
                     elif label == "Total Loss":
                         kpi_class = "loss"
                     kpi_html += self.render_small_kpi_card(label, value_int, kpi_class)
+                kpi_html += self.render_small_kpi_card( "LTP > BPAvg", str(bprice_to_ltp_count), "profit" )
+                kpi_html += self.render_small_kpi_card( "LTP > BPAvg", str(bprice_to_ltp_count), "profit" )
+                kpi_html += self.render_small_kpi_card( "LTP > Close", str(prevclose_to_ltp_count), "profit" )
+                
+                kpi_html += self.render_small_kpi_card( "Up > 5%", str(up_5_pct), "profit" )
+                kpi_html += self.render_small_kpi_card( "Up > 10%", str(up_10_pct), "profit" )
+                kpi_html += self.render_small_kpi_card( "Up > 20%", str(up_20_pct), "profit" )
+                
+                kpi_html += self.render_small_kpi_card( "Down > 5%", str(down_5_pct), "loss" )
+                kpi_html += self.render_small_kpi_card( "Down > 10%", str(down_10_pct), "loss" )
+                kpi_html += self.render_small_kpi_card( "Down > 20%", str(down_20_pct), "loss" )
+                
+                sl_pnl_class = "profit" if total_sl_pnl >= 0 else "loss"
+                kpi_html += self.render_small_kpi_card("SL Trigger PnL", str(int(total_sl_pnl)), sl_pnl_class)
+    
                 kpi_html += '</div>'
                 st.markdown(kpi_html, unsafe_allow_html=True)
             st.markdown('<hr style="border:none; border-top:1px solid #e5e7eb; margin:8px 0 8px 0;" />', unsafe_allow_html=True)
@@ -1209,9 +1482,14 @@ lambda x: f"{x:.2f}" if pd.notna(x) else "-")
                 <div class="section-heading" style="margin-top:0.5rem; margin-bottom:0.5rem;">Positions Overview</div>
             </div>
             """, unsafe_allow_html=True)
+            if "GradeScore" not in filtered_df.columns:
+              filtered_df["GradeScore"] = np.nan
             filtered_display_df = filtered_df.copy().reset_index(drop=True)
+     
+            filtered_display_df["SL_Trigger_PnL"] = filtered_display_df.apply( lambda row: round( ( float(row["StopLoss"][0] if isinstance(row["StopLoss"], list) else row["StopLoss"]) - float(row["BuyPriceAvg"][0] if isinstance(row["BuyPriceAvg"], list) else row["BuyPriceAvg"]) ) / float(row["BuyPriceAvg"][0] if isinstance(row["BuyPriceAvg"], list) else row["BuyPriceAvg"]) * 100, 2 ) if row["StopLoss"] not in ("-", None, np.nan) and row["BuyPriceAvg"] not in ("-", None, np.nan) and float(row["BuyPriceAvg"][0] if isinstance(row["BuyPriceAvg"], list) else row["BuyPriceAvg"]) != 0 else np.nan, axis=1 )
+
             if "Profit" in filtered_display_df.columns:
-                filtered_display_df = filtered_display_df.rename(columns={"Profit": "Profit & Loss"})
+                filtered_display_df = filtered_display_df.rename(columns={"Profit": "Profit & Loss"}).round(2)
             filtered_display_df = filtered_display_df[display_columns]
             def format_list_to_string(lst):
                 if isinstance(lst, list):
@@ -1224,10 +1502,32 @@ lambda x: f"{x:.2f}" if pd.notna(x) else "-")
             filtered_display_df["Strike"] = filtered_display_df["Strike"].apply(lambda x: f"{x:.2f}" if isinstance(x, (int, float)) and not pd.isna(x) else "-")
             filtered_display_df["Close"] = filtered_display_df["Close"].apply(lambda x: f"{x:.2f}" if isinstance(x, (int, float)) and not pd.isna(x) else "-")
             filtered_display_df["Yesterday's PNL"] = filtered_display_df["Yesterday's PNL"].apply(lambda x: f"{x:.2f}" if isinstance(x, (int, float)) and not pd.isna(x) else "-")
-            filtered_display_df["ExpiryDT"] = filtered_display_df["ExpiryDT"].astype(str)
+            # filtered_display_df["ExDate"]=filtered_display_df["ExDate"].astype(str)
+            filtered_display_df["ExDate"] = filtered_display_df["ExDate"].apply(
+                lambda x: ' , '.join([pd.to_datetime(i).strftime("%d-%m-%Y") for i in x]) if isinstance(x, list) else pd.to_datetime(x).strftime("%d-%m-%Y")
+            )
+            # filtered_display_df["EnDate"]=filtered_display_df["EnDate"].astype(str)
+            filtered_display_df["EnDate"] = filtered_display_df["EnDate"].apply(
+                lambda x: ' , '.join([pd.to_datetime(i).strftime("%d-%m-%Y") for i in x]) if isinstance(x, list) else pd.to_datetime(x).strftime("%d-%m-%Y")
+            )
+            filtered_display_df["GradeScore"] = filtered_display_df["GradeScore"].apply(
+    lambda x: f"{x:.2f}" if isinstance(x, (int, float)) and not pd.isna(x) else "-"
+)
+
             filtered_display_df["StopLoss"] = filtered_display_df["StopLoss"].apply(format_list_to_string)
             filtered_display_df["MaxHigh"] = filtered_display_df["MaxHigh"].apply(format_list_to_string)
-   
+            # Calculate BuyPriceAvg to MaxHigh % directly
+            filtered_display_df["BPavgtoMaxHigh%"] = filtered_display_df.apply( lambda row: ( round( ( float(row["MaxHigh"][0] if isinstance(row["MaxHigh"], list) else row["MaxHigh"]) - float(row["BuyPriceAvg"][0] if isinstance(row["BuyPriceAvg"], list) else row["BuyPriceAvg"]) ) / float(row["BuyPriceAvg"][0] if isinstance(row["BuyPriceAvg"], list) else row["BuyPriceAvg"]) * 100, 2 ) if str(row["BuyPriceAvg"]).replace(".", "", 1).isdigit() and str(row["MaxHigh"]).replace(".", "", 1).isdigit() else np.nan ), axis=1 )
+            
+            filtered_display_df["MaxHigh"] = filtered_display_df["MaxHigh"].apply(format_list_to_string)
+            # Calculate BuyPriceAvg to MaxHigh % directly
+            filtered_display_df["BPavgtoMaxHigh%"] = filtered_display_df.apply( lambda row: ( round( ( float(row["MaxHigh"][0] if isinstance(row["MaxHigh"], list) else row["MaxHigh"]) - float(row["BuyPriceAvg"][0] if isinstance(row["BuyPriceAvg"], list) else row["BuyPriceAvg"]) ) / float(row["BuyPriceAvg"][0] if isinstance(row["BuyPriceAvg"], list) else row["BuyPriceAvg"]) * 100, 2 ) if str(row["BuyPriceAvg"]).replace(".", "", 1).isdigit() and str(row["MaxHigh"]).replace(".", "", 1).isdigit() else np.nan ), axis=1 )
+            
+            if "MaxHigh" in filtered_display_df.columns:
+                filtered_display_df["MaxHightoClose%"] = filtered_display_df.apply( lambda row: ( round( ( float(row["Close"]) - float(row["MaxHigh"]) ) / float(row["MaxHigh"]) * 100, 2 ) if str(row["MaxHigh"]).replace(".", "", 1).isdigit() and str(row["Close"]).replace(".", "", 1).isdigit() and float(row["MaxHigh"]) != 0 else np.nan ), axis=1 )
+
+            filtered_df["LTP_SL_%"].replace([np.inf, -np.inf], np.nan, inplace=True)
+
             # --- Force Pos column sorted as: open → close ---
             # Create a helper column for sorting
             filtered_display_df["PosOrder"] = filtered_display_df["Pos"].map({"open": 0, "close": 1}).fillna(2)
@@ -1248,7 +1548,13 @@ lambda x: f"{x:.2f}" if pd.notna(x) else "-")
             gb.configure_column("Instrument", minWidth=100, maxWidth=120, cellClass="bounce-on-hover")
             gb.configure_column("Option", minWidth=80, maxWidth=100, cellClass="bounce-on-hover")
             gb.configure_column("Strike", minWidth=100, maxWidth=120, cellClass="bounce-on-hover")
-            gb.configure_column("ExpiryDT", minWidth=120, maxWidth=150, cellClass="bounce-on-hover")
+            gb.configure_column("ExDate", minWidth=120, maxWidth=150, cellClass="bounce-on-hover")
+            gb.configure_column("EnDate", minWidth=120, maxWidth=250, cellClass="bounce-on-hover")
+            gb.configure_column("LTP_SL_%", minWidth=120, maxWidth=150, cellClass="bounce-on-hover")
+            gb.configure_column("BPavgtoMaxHigh%", minWidth=120, maxWidth=150, cellClass="bounce-on-hover")
+            gb.configure_column("SL_Trigger_PnL",minWidth=120, maxWidth=150, cellClass="bounce-on-hover")
+            gb.configure_column( "GradeScore", minWidth=100, maxWidth=120, cellClass="bounce-on-hover" )
+
             gb.configure_column("Pos", minWidth=80, maxWidth=100, cellClass="bounce-on-hover",pinned='left')
             gb.configure_column("Profit & Loss", minWidth=150, maxWidth=120, cellStyle=JsCode("""
                 function(params) {
@@ -1323,22 +1629,115 @@ lambda x: f"{x:.2f}" if pd.notna(x) else "-")
 }
 </style>
 """, unsafe_allow_html=True)
+            # --- Split Tables Logic ---
+            # Define columns for Table 1 (Primary)
+            columns_table1 = [
+                "Symbol", "Pos", "Profit & Loss", "Yesterday's PNL", "SL_Trigger_PnL", 
+                "LTP", "EnDate", "BuyPriceAvg", "ExDate", "SellPriceAvg", 
+                "StopLoss", "Qty"
+            ]
+            
+            # Add MaxHigh to Table 1 if it exists
+            if "MaxHigh" in filtered_display_df.columns and any(filtered_df["StrategyID"] == "CST0002"):
+                 if "StopLoss" in columns_table1:
+                     columns_table1.insert(columns_table1.index("StopLoss") + 1, "MaxHigh")
+                 else:
+                     columns_table1.append("MaxHigh")
+
+            # Identify remaining columns for Table 2
+            # We start with the full list of potential display columns and subtract those in Table 1
+            all_potential_cols = [
+                "StrategyID", "Symbol", "Pos", "Profit & Loss", "Yesterday's PNL", 
+                "BuyPriceAvg", "SellPriceAvg", "EnDate", "BuyPrice", "SellPrice","GradeScore", 
+                "LTP", "LTP_SL_%", "StopLoss", "SL_Trigger_PnL", "Close", "Qty", 
+                "Instrument", "Option", "Strike", "ExDate", "ClientID", 
+                "MaxHigh", "BPavgtoMaxHigh%", "MaxHightoClose%",
+                "Sector", "PostExit_Return"
+            ]
+            # Ensure we only pick columns that are actually in the dataframe
+            columns_table2 = [col for col in all_potential_cols if (col not in columns_table1 or col == "Symbol") and col in filtered_display_df.columns]
+
+            # Create DataFrames for both tables
+            valid_cols_table1 = [col for col in columns_table1 if col in filtered_display_df.columns]
+            df_table1 = filtered_display_df[valid_cols_table1].copy()
+            
+            valid_cols_table2 = [col for col in columns_table2 if col in filtered_display_df.columns]
+            df_table2 = filtered_display_df[valid_cols_table2].copy()
+
+            # Helper function to configure grid
+            def configure_grid(df, key_suffix):
+                gb = GridOptionsBuilder.from_dataframe(df)
+                # Removed maxWidth restriction to allow scrolling
+                gb.configure_default_column(sortable=True, filter=True, resizable=True, groupable=False, minWidth=120, cellStyle={"textAlign": "center"}, headerClass="ag-center-cols-header")
+                
+                for col in df.columns:
+                     if col in ["StrategyID", "Symbol", "Pos", "ClientID"]:
+                         gb.configure_column(col, minWidth=120, cellClass="bounce-on-hover", pinned='left')
+                     elif col in ["Profit & Loss", "Yesterday's PNL"]:
+                         gb.configure_column(col, minWidth=140, cellStyle=JsCode("""
+                            function(params) {
+                                if (params.value > 0) {
+                                    return {'backgroundColor': '#59de90', 'color': '#111827'};
+                                } else if (params.value < 0) {
+                                    return {'backgroundColor': '#f27979', 'color': '#111827'};
+                                }
+                                return {};
+                            }
+                        """), cellClass="bounce-on-hover", pinned='left')
+                     elif col == "EnDate":
+                         gb.configure_column(col, minWidth=150, cellClass="bounce-on-hover")
+                     elif col == "Option":
+                         gb.configure_column(col, minWidth=100, cellClass="bounce-on-hover")
+                     else:
+                         gb.configure_column(col, minWidth=120, cellClass="bounce-on-hover")
+                
+                return gb.build()
+
+            grid_options_1 = configure_grid(df_table1, "1")
+            grid_options_2 = configure_grid(df_table2, "2")
+            
+            common_custom_css = {
+                ".ag-header-cell-label": {"color": "#000000", "fontWeight": "900", "fontSize": "2rem", "textAlign": "center"},
+                ".ag-header-cell-text": {"color": "#000000", "fontWeight": "1000", "fontSize": "2rem", "textAlign": "center"},
+                ".ag-header-group-cell-label": {"color": "#000000", "fontWeight": "900", "fontSize": "2rem", "textAlign": "center"},
+                ".ag-header-group-cell-label span": {"color": "#000000", "fontWeight": "900", "fontSize": "2rem", "textAlign": "center"},
+            }
+
+            st.markdown(
+                '<div style="display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 20px;">',
+                unsafe_allow_html=True
+            )
+            
+            st.markdown('<div style="text-align:center; font-weight:600; margin-bottom: 5px;"></div>', unsafe_allow_html=True)
             AgGrid(
-                filtered_display_df,
-                gridOptions=grid_options,
+                df_table1,
+                gridOptions=grid_options_1,
                 height=400,
                 width=950,
                 allow_unsafe_jscode=True,
                 theme="streamlit",
                 update_mode=GridUpdateMode.FILTERING_CHANGED | GridUpdateMode.SORTING_CHANGED,
                 data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
-                fit_columns_on_grid_load=True,
-                custom_css={
-                    ".ag-header-cell-label": {"color": "#000000", "fontWeight": "900", "fontSize": "2rem", "textAlign": "center"},
-                    ".ag-header-cell-text": {"color": "#000000", "fontWeight": "1000", "fontSize": "2rem", "textAlign": "center"},
-                    ".ag-header-group-cell-label": {"color": "#000000", "fontWeight": "900", "fontSize": "2rem", "textAlign": "center"},
-                    ".ag-header-group-cell-label span": {"color": "#000000", "fontWeight": "900", "fontSize": "2rem", "textAlign": "center"},
-                }
+                fit_columns_on_grid_load=False,
+                custom_css=common_custom_css,
+                key="grid1"
+            )
+            
+            st.markdown('<div style="height: 20px;"></div>', unsafe_allow_html=True)
+            st.markdown('<div style="text-align:center; font-weight:600; margin-bottom: 5px; font-size: 1.2rem;">Detailed Breakdown</div>', unsafe_allow_html=True)
+            
+            AgGrid(
+                df_table2,
+                gridOptions=grid_options_2,
+                height=400,
+                width=950,
+                allow_unsafe_jscode=True,
+                theme="streamlit",
+                update_mode=GridUpdateMode.FILTERING_CHANGED | GridUpdateMode.SORTING_CHANGED,
+                data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
+                fit_columns_on_grid_load=False,
+                custom_css=common_custom_css,
+                key="grid2"
             )
             st.markdown("""
 <script>
@@ -1381,45 +1780,48 @@ setTimeout(function() {
                 all_strategies_df.groupby("StrategyID")["Profit"].sum().reset_index()
                 .sort_values("Profit", ascending=False)
             )
-            bar_colors = profit_by_strategy["Profit"].apply(lambda x: '#059669' if x >= 0 else '#DC2626').tolist()
-            if st.session_state.selected_strategy == "All Strategies":
-                col1, col2 = st.columns(2)
-                with col1:
+            
+            # Only show if there is more than one strategy
+            if len(profit_by_strategy) > 1:
+                bar_colors = profit_by_strategy["Profit"].apply(lambda x: '#059669' if x >= 0 else '#DC2626').tolist()
+                if st.session_state.selected_strategy == "All Strategies":
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.markdown('<div style="text-align:center; font-size:1.5rem; font-weight:700; margin-bottom:0.5rem; color:#111111;">Profit by Strategy</div>', unsafe_allow_html=True)
+                        fig = self.render_bar_chart(profit_by_strategy, bar_colors)
+                        st.plotly_chart(fig, use_container_width=True)
+                    with col2:
+                        st.markdown('<div style="text-align:center; font-size:1.5rem; font-weight:700; margin-bottom:0.5rem; color:#111111;">Profit Distribution by Strategy</div>', unsafe_allow_html=True)
+                        custom_palette = ['#059669', '#DC2626', '#111111', '#e5e7eb']  # green, red, black, light gray
+                        num_strategies = len(profit_by_strategy["StrategyID"])
+                        if num_strategies <= 4:
+                            pie_colors = [custom_palette[i % len(custom_palette)] for i in range(num_strategies)]
+                        else:
+                            palette = plotly.colors.qualitative.Plotly
+                            pie_colors = [palette[i % len(palette)] for i in range(num_strategies)]
+                        pie_fig = go.Figure(
+                            data=[
+                                go.Pie(
+                                    labels=profit_by_strategy["StrategyID"],
+                                    values=profit_by_strategy["Profit"],
+                                    hole=0.4,
+                                    textinfo='label+percent',
+                                    insidetextorientation='radial',
+                                    marker=dict(colors=pie_colors)
+                                )
+                            ]
+                        )
+                        pie_fig.update_layout(
+                            font=dict(family="Inter, sans-serif", color="var(--text-color)", size=14),
+                            margin=dict(l=20, r=20, t=20, b=40),
+                            showlegend=True
+                        )
+                        st.plotly_chart(pie_fig, use_container_width=True)
+                else:
                     st.markdown('<div style="text-align:center; font-size:1.5rem; font-weight:700; margin-bottom:0.5rem; color:#111111;">Profit by Strategy</div>', unsafe_allow_html=True)
                     fig = self.render_bar_chart(profit_by_strategy, bar_colors)
                     st.plotly_chart(fig, use_container_width=True)
-                with col2:
-                    st.markdown('<div style="text-align:center; font-size:1.5rem; font-weight:700; margin-bottom:0.5rem; color:#111111;">Profit Distribution by Strategy</div>', unsafe_allow_html=True)
-                    custom_palette = ['#059669', '#DC2626', '#111111', '#e5e7eb']  # green, red, black, light gray
-                    num_strategies = len(profit_by_strategy["StrategyID"])
-                    if num_strategies <= 4:
-                        pie_colors = [custom_palette[i % len(custom_palette)] for i in range(num_strategies)]
-                    else:
-                        palette = plotly.colors.qualitative.Plotly
-                        pie_colors = [palette[i % len(palette)] for i in range(num_strategies)]
-                    pie_fig = go.Figure(
-                        data=[
-                            go.Pie(
-                                labels=profit_by_strategy["StrategyID"],
-                                values=profit_by_strategy["Profit"],
-                                hole=0.4,
-                                textinfo='label+percent',
-                                insidetextorientation='radial',
-                                marker=dict(colors=pie_colors)
-                            )
-                        ]
-                    )
-                    pie_fig.update_layout(
-                        font=dict(family="Inter, sans-serif", color="var(--text-color)", size=14),
-                        margin=dict(l=20, r=20, t=20, b=40),
-                        showlegend=True
-                    )
-                    st.plotly_chart(pie_fig, use_container_width=True)
-            else:
-                st.markdown('<div style="text-align:center; font-size:1.5rem; font-weight:700; margin-bottom:0.5rem; color:#111111;">Profit by Strategy</div>', unsafe_allow_html=True)
-                fig = self.render_bar_chart(profit_by_strategy, bar_colors)
-                st.plotly_chart(fig, use_container_width=True)
-            st.markdown('<hr style="border:none; border-top:1px solid #e5e7eb; margin:8px 0 8px 0;" />', unsafe_allow_html=True)
+                st.markdown('<hr style="border:none; border-top:1px solid #e5e7eb; margin:8px 0 8px 0;" />', unsafe_allow_html=True)
 
             # --- Profit & Investment Trends Section ---
             st.markdown('<div class="section-heading" style="text-align:center; font-size:2rem; margin-bottom:0.5rem;">Profit & Investment Trends</div>', unsafe_allow_html=True)
@@ -1591,6 +1993,7 @@ def run_dashboard():
 
 if __name__ == "__main__":
     run_dashboard()
+
 
 
 
