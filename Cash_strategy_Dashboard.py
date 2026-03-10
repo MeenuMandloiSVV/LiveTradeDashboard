@@ -23,6 +23,8 @@ logger = logging.getLogger(__name__)
 # MongoDB URI
 mongo_uri = st.secrets["mongo"]["uri"]
 
+
+
 class LoginRateLimiter:
     def __init__(self):
         self.attempts = {}
@@ -1286,7 +1288,7 @@ lambda x: f"{x:.2f}" if pd.notna(x) else "-")
                 return
 
             display_columns = [
-                "StrategyID", "Symbol", "Pos", "GradeScore","Profit & Loss","Yesterday's PNL","BuyPriceAvg","SellPriceAvg","EnDate","BuyPrice", "SellPrice", "LTP","LTP_SL_%","StopLoss","SL_Trigger_PnL","Close","Qty", "Instrument", "Option", "Strike","ExDate","ClientID","Sector","PostExit_Return"
+                "StrategyID", "Symbol", "Pos", "GradeScore","Profit & Loss","Yesterday's PNL","BuyPriceAvg","SellPriceAvg","EnDate","BuyPrice", "SellPrice", "LTP","LTP_SL_%","StopLoss","SL_Trigger_PnL","Close","Qty", "ExDate","PostExit_Return","ClientID","Sector","Instrument", "Option", "Strike"
             ]
             if "MaxHigh" in filtered_df.columns and any(filtered_df["StrategyID"] == "CST0002"):
                 display_columns.insert(display_columns.index("StopLoss") + 1, "MaxHigh")
@@ -1367,18 +1369,23 @@ lambda x: f"{x:.2f}" if pd.notna(x) else "-")
             </div>
             """, unsafe_allow_html=True)
             try:
-                # Helper to handle list or scalar
-                def get_scalar_val(val):
-                    if isinstance(val, list):
-                        return val[0] if len(val) > 0 else np.nan
-                    return val
+                # Helper to handle list or scalar safely
+                def robust_float_kpi(val):
+                    try:
+                        if isinstance(val, (int, float)): return float(val)
+                        if isinstance(val, list): return float(val[0]) if val else np.nan
+                        s = str(val).strip()
+                        if s in ["", "-", "nan", "None"]: return np.nan
+                        s = s.replace(",", "").replace("₹", "")
+                        return float(s)
+                    except:
+                        return np.nan
 
                 calc_df = filtered_df.copy()
-                calc_df["LTP_numeric"] = pd.to_numeric(calc_df["LTP"], errors='coerce')
-                calc_df["Close_numeric"] = pd.to_numeric(calc_df["Close"], errors='coerce')
-                calc_df["BuyPriceAvg_numeric"] = calc_df["BuyPriceAvg"].apply(
-                    lambda x: pd.to_numeric(get_scalar_val(x), errors='coerce')
-                )
+                # Apply robust_float to relevant columns for KPI calc
+                calc_df["LTP_numeric"] = calc_df["LTP"].apply(robust_float_kpi)
+                calc_df["Close_numeric"] = calc_df["Close"].apply(robust_float_kpi)
+                calc_df["BuyPriceAvg_numeric"] = calc_df["BuyPriceAvg"].apply(robust_float_kpi)
                 
                 # Count LTP > BuyPriceAvg
                 bprice_to_ltp_count = len(calc_df[
@@ -1391,8 +1398,15 @@ lambda x: f"{x:.2f}" if pd.notna(x) else "-")
                 ])
                 
                 # Calculate percentage change
-                calc_df["Pct_Change"] = ((calc_df["LTP_numeric"] - calc_df["Close_numeric"]) / calc_df["Close_numeric"]) * 100
-                
+                # (LTP - Close) / Close * 100
+                calc_df["Pct_Change"] = calc_df.apply(
+                    lambda row: (
+                        (row["LTP_numeric"] - row["Close_numeric"]) / row["Close_numeric"] * 100 
+                        if pd.notna(row["LTP_numeric"]) and pd.notna(row["Close_numeric"]) and row["Close_numeric"] != 0 
+                        else np.nan
+                    ), axis=1
+                )
+                        
                 # Counts for thresholds
                 up_5_pct = len(calc_df[calc_df["Pct_Change"] >= 5])
                 up_10_pct = len(calc_df[calc_df["Pct_Change"] >= 10])
@@ -1410,20 +1424,12 @@ lambda x: f"{x:.2f}" if pd.notna(x) else "-")
                         bp = row.get("BuyPriceAvg")
                         qty = row.get("Qty")
                         
-                        # Handle lists
-                        if isinstance(sl, list): sl = sl[0] if len(sl) > 0 else np.nan
-                        if isinstance(bp, list): bp = bp[0] if len(bp) > 0 else np.nan
-                        if isinstance(qty, list): qty = qty[0] if len(qty) > 0 else np.nan
+                        sl_val = robust_float_kpi(sl)
+                        bp_val = robust_float_kpi(bp)
+                        qty_val = robust_float_kpi(qty)
                         
-                        if pd.isna(sl) or pd.isna(bp) or pd.isna(qty) or sl in ["-", ""] or bp in ["-", ""] or qty in ["-", ""]:
-                            continue
-                            
-                        # Convert to float
-                        sl_val = float(str(sl).replace(",", "").replace("₹", ""))
-                        bp_val = float(str(bp).replace(",", "").replace("₹", ""))
-                        qty_val = float(str(qty).replace(",", "").replace("₹", ""))
-                        
-                        total_sl_pnl += (sl_val - bp_val) * qty_val
+                        if pd.notna(sl_val) and pd.notna(bp_val) and pd.notna(qty_val):
+                             total_sl_pnl += (sl_val - bp_val) * qty_val
                     except Exception:
                         continue
             except Exception as e:
@@ -1458,7 +1464,6 @@ lambda x: f"{x:.2f}" if pd.notna(x) else "-")
                         kpi_class = "loss"
                     kpi_html += self.render_small_kpi_card(label, value_int, kpi_class)
                 kpi_html += self.render_small_kpi_card( "LTP > BPAvg", str(bprice_to_ltp_count), "profit" )
-                kpi_html += self.render_small_kpi_card( "LTP > BPAvg", str(bprice_to_ltp_count), "profit" )
                 kpi_html += self.render_small_kpi_card( "LTP > Close", str(prevclose_to_ltp_count), "profit" )
                 
                 kpi_html += self.render_small_kpi_card( "Up > 5%", str(up_5_pct), "profit" )
@@ -1486,15 +1491,93 @@ lambda x: f"{x:.2f}" if pd.notna(x) else "-")
               filtered_df["GradeScore"] = np.nan
             filtered_display_df = filtered_df.copy().reset_index(drop=True)
      
-            filtered_display_df["SL_Trigger_PnL"] = filtered_display_df.apply( lambda row: round( ( float(row["StopLoss"][0] if isinstance(row["StopLoss"], list) else row["StopLoss"]) - float(row["BuyPriceAvg"][0] if isinstance(row["BuyPriceAvg"], list) else row["BuyPriceAvg"]) ) / float(row["BuyPriceAvg"][0] if isinstance(row["BuyPriceAvg"], list) else row["BuyPriceAvg"]) * 100, 2 ) if row["StopLoss"] not in ("-", None, np.nan) and row["BuyPriceAvg"] not in ("-", None, np.nan) and float(row["BuyPriceAvg"][0] if isinstance(row["BuyPriceAvg"], list) else row["BuyPriceAvg"]) != 0 else np.nan, axis=1 )
+            def calc_sl_trigger_pnl(row):
+                try:
+                    # Helper to get scalar from potential list
+                    def get_val(val):
+                        return val[0] if isinstance(val, list) and len(val) > 0 else val
+
+                    sl = get_val(row.get("StopLoss"))
+                    bp = get_val(row.get("BuyPriceAvg"))
+
+                    # Return "-" if missing
+                    if pd.isna(sl) or pd.isna(bp) or str(sl).strip() in ["-", ""] or str(bp).strip() in ["-", ""]:
+                        return "-"
+
+                    # Clean strings (remove commas, currency symbols)
+                    sl_clean = str(sl).replace(",", "").replace("₹", "").strip()
+                    bp_clean = str(bp).replace(",", "").replace("₹", "").strip()
+
+                    sl_float = float(sl_clean)
+                    bp_float = float(bp_clean)
+
+                    if bp_float == 0:
+                        return "-"
+
+                    pnl_pct = ((sl_float - bp_float) / bp_float) * 100
+                    return f"{int(pnl_pct)}%"
+                except Exception:
+                    return "-"
+
+            filtered_display_df["SL_Trigger_PnL"] = filtered_display_df.apply(calc_sl_trigger_pnl, axis=1)
+
+            # --- Robust Calculation Block (Inserted BEFORE string formatting) ---
+            def robust_float(val):
+                try:
+                    if isinstance(val, (int, float)): return float(val)
+                    if isinstance(val, list): return float(val[0]) if val else np.nan
+                    
+                    s = str(val).strip()
+                    if s in ["", "-", "nan", "None"]: return np.nan
+                    if s.startswith("[") and s.endswith("]"):
+                         # Naive parse: extract first number if it looks like a list string
+                         s = s[1:-1].split(",")[0]
+                    # Remove currency symbols/commas if any
+                    s = s.replace(",", "").replace("₹", "")
+                    return float(s)
+                except:
+                    return np.nan
+
+            filtered_display_df["BPavgtoMaxHigh%"] = filtered_display_df.apply(
+                lambda row: (lambda mh, bp: round(((mh - bp) / bp) * 100, 2) if pd.notna(mh) and pd.notna(bp) and bp != 0 else np.nan)(
+                    robust_float(row.get("MaxHigh")), robust_float(row.get("BuyPriceAvg"))
+                ), axis=1
+            )
+            
+            # Add to display_columns if not present ensuring it shows up
+            if "BPavgtoMaxHigh%" not in display_columns:
+                 if "Qty" in display_columns:
+                     display_columns.insert(display_columns.index("Qty") + 1, "BPavgtoMaxHigh%")
+                 else:
+                     display_columns.append("BPavgtoMaxHigh%")
+
+            if "MaxHigh" in filtered_display_df.columns:
+                 filtered_display_df["MaxHightoClose%"] = filtered_display_df.apply(
+                    lambda row: (lambda mh, cl: round(((cl - mh) / mh) * 100, 2) if pd.notna(mh) and pd.notna(cl) and mh != 0 else np.nan)(
+                        robust_float(row.get("MaxHigh")), robust_float(row.get("Close"))
+                    ), axis=1
+                )
+            
+            # Add DayChange% column (LTP vs Close)
+            filtered_display_df["DayChange%"] = filtered_display_df.apply(
+                lambda row: (lambda ltp, cl: round(((ltp - cl) / cl) * 100, 2) if pd.notna(ltp) and pd.notna(cl) and cl != 0 else np.nan)(
+                    robust_float(row.get("LTP")), robust_float(row.get("Close"))
+                ), axis=1
+            )
+            
+            # Ensure DayChange% is in display_columns
+            if "DayChange%" not in display_columns:
+                display_columns.append("DayChange%")
 
             if "Profit" in filtered_display_df.columns:
                 filtered_display_df = filtered_display_df.rename(columns={"Profit": "Profit & Loss"}).round(2)
             filtered_display_df = filtered_display_df[display_columns]
+            
             def format_list_to_string(lst):
                 if isinstance(lst, list):
                     return ", ".join([f"{x:.2f}" if isinstance(x, (int, float)) and not pd.isna(x) else str(x) for x in lst])
                 return str(lst) if not pd.isna(lst) else "-"
+
             filtered_display_df["BuyPrice"] = filtered_display_df["BuyPrice"].apply(format_list_to_string)
             filtered_display_df["SellPrice"] = filtered_display_df["SellPrice"].apply(format_list_to_string)
             filtered_display_df["BuyPriceAvg"] = filtered_display_df["BuyPriceAvg"].apply(format_list_to_string)
@@ -1502,32 +1585,37 @@ lambda x: f"{x:.2f}" if pd.notna(x) else "-")
             filtered_display_df["Strike"] = filtered_display_df["Strike"].apply(lambda x: f"{x:.2f}" if isinstance(x, (int, float)) and not pd.isna(x) else "-")
             filtered_display_df["Close"] = filtered_display_df["Close"].apply(lambda x: f"{x:.2f}" if isinstance(x, (int, float)) and not pd.isna(x) else "-")
             filtered_display_df["Yesterday's PNL"] = filtered_display_df["Yesterday's PNL"].apply(lambda x: f"{x:.2f}" if isinstance(x, (int, float)) and not pd.isna(x) else "-")
-            # filtered_display_df["ExDate"]=filtered_display_df["ExDate"].astype(str)
+            
             filtered_display_df["ExDate"] = filtered_display_df["ExDate"].apply(
                 lambda x: ' , '.join([pd.to_datetime(i).strftime("%d-%m-%Y") for i in x]) if isinstance(x, list) else pd.to_datetime(x).strftime("%d-%m-%Y")
             )
-            # filtered_display_df["EnDate"]=filtered_display_df["EnDate"].astype(str)
             filtered_display_df["EnDate"] = filtered_display_df["EnDate"].apply(
                 lambda x: ' , '.join([pd.to_datetime(i).strftime("%d-%m-%Y") for i in x]) if isinstance(x, list) else pd.to_datetime(x).strftime("%d-%m-%Y")
             )
             filtered_display_df["GradeScore"] = filtered_display_df["GradeScore"].apply(
-    lambda x: f"{x:.2f}" if isinstance(x, (int, float)) and not pd.isna(x) else "-"
-)
+                lambda x: f"{x:.2f}" if isinstance(x, (int, float)) and not pd.isna(x) else "-"
+            )
 
             filtered_display_df["StopLoss"] = filtered_display_df["StopLoss"].apply(format_list_to_string)
             filtered_display_df["MaxHigh"] = filtered_display_df["MaxHigh"].apply(format_list_to_string)
-            # Calculate BuyPriceAvg to MaxHigh % directly
-            filtered_display_df["BPavgtoMaxHigh%"] = filtered_display_df.apply( lambda row: ( round( ( float(row["MaxHigh"][0] if isinstance(row["MaxHigh"], list) else row["MaxHigh"]) - float(row["BuyPriceAvg"][0] if isinstance(row["BuyPriceAvg"], list) else row["BuyPriceAvg"]) ) / float(row["BuyPriceAvg"][0] if isinstance(row["BuyPriceAvg"], list) else row["BuyPriceAvg"]) * 100, 2 ) if str(row["BuyPriceAvg"]).replace(".", "", 1).isdigit() and str(row["MaxHigh"]).replace(".", "", 1).isdigit() else np.nan ), axis=1 )
-            
-            filtered_display_df["MaxHigh"] = filtered_display_df["MaxHigh"].apply(format_list_to_string)
-            # Calculate BuyPriceAvg to MaxHigh % directly
-            filtered_display_df["BPavgtoMaxHigh%"] = filtered_display_df.apply( lambda row: ( round( ( float(row["MaxHigh"][0] if isinstance(row["MaxHigh"], list) else row["MaxHigh"]) - float(row["BuyPriceAvg"][0] if isinstance(row["BuyPriceAvg"], list) else row["BuyPriceAvg"]) ) / float(row["BuyPriceAvg"][0] if isinstance(row["BuyPriceAvg"], list) else row["BuyPriceAvg"]) * 100, 2 ) if str(row["BuyPriceAvg"]).replace(".", "", 1).isdigit() and str(row["MaxHigh"]).replace(".", "", 1).isdigit() else np.nan ), axis=1 )
-            
-            if "MaxHigh" in filtered_display_df.columns:
-                filtered_display_df["MaxHightoClose%"] = filtered_display_df.apply( lambda row: ( round( ( float(row["Close"]) - float(row["MaxHigh"]) ) / float(row["MaxHigh"]) * 100, 2 ) if str(row["MaxHigh"]).replace(".", "", 1).isdigit() and str(row["Close"]).replace(".", "", 1).isdigit() and float(row["MaxHigh"]) != 0 else np.nan ), axis=1 )
 
-            filtered_df["LTP_SL_%"].replace([np.inf, -np.inf], np.nan, inplace=True)
+             # Integer % Formatting function
+            def format_percentage(val):
+                try:
+                    if pd.isna(val) or val == "" or val == "-" or str(val).lower() == "nan":
+                        return "-"
+                    val_float = float(str(val).replace("%", "").strip())
+                    return f"{int(val_float)}%"
+                except Exception:
+                    return "-"
 
+            # Apply formatting to percentage columns
+            pct_cols = ["LTP_SL_%", "PostExit_Return", "BPavgtoMaxHigh%", "MaxHightoClose%", "DayChange%"]
+            for col in pct_cols:
+                if col in filtered_display_df.columns:
+                    filtered_display_df[col] = filtered_display_df[col].replace([np.inf, -np.inf], np.nan)
+                    filtered_display_df[col] = filtered_display_df[col].apply(format_percentage)
+ 
             # --- Force Pos column sorted as: open → close ---
             # Create a helper column for sorting
             filtered_display_df["PosOrder"] = filtered_display_df["Pos"].map({"open": 0, "close": 1}).fillna(2)
@@ -1552,6 +1640,7 @@ lambda x: f"{x:.2f}" if pd.notna(x) else "-")
             gb.configure_column("EnDate", minWidth=120, maxWidth=250, cellClass="bounce-on-hover")
             gb.configure_column("LTP_SL_%", minWidth=120, maxWidth=150, cellClass="bounce-on-hover")
             gb.configure_column("BPavgtoMaxHigh%", minWidth=120, maxWidth=150, cellClass="bounce-on-hover")
+            gb.configure_column("DayChange%", minWidth=100, maxWidth=120, cellClass="bounce-on-hover")
             gb.configure_column("SL_Trigger_PnL",minWidth=120, maxWidth=150, cellClass="bounce-on-hover")
             gb.configure_column( "GradeScore", minWidth=100, maxWidth=120, cellClass="bounce-on-hover" )
 
@@ -1649,10 +1738,10 @@ lambda x: f"{x:.2f}" if pd.notna(x) else "-")
             all_potential_cols = [
                 "StrategyID", "Symbol", "Pos", "Profit & Loss", "Yesterday's PNL", 
                 "BuyPriceAvg", "SellPriceAvg", "EnDate", "BuyPrice", "SellPrice","GradeScore", 
-                "LTP", "LTP_SL_%", "StopLoss", "SL_Trigger_PnL", "Close", "Qty", 
-                "Instrument", "Option", "Strike", "ExDate", "ClientID", 
-                "MaxHigh", "BPavgtoMaxHigh%", "MaxHightoClose%",
-                "Sector", "PostExit_Return"
+                "LTP", "LTP_SL_%", "StopLoss", "SL_Trigger_PnL", "Close", "Qty", "ExDate", "ClientID", 
+                "MaxHigh", "BPavgtoMaxHigh%", "MaxHightoClose%","PostExit_Return", 
+                "Sector", 
+                "Instrument", "Option", "Strike"
             ]
             # Ensure we only pick columns that are actually in the dataframe
             columns_table2 = [col for col in all_potential_cols if (col not in columns_table1 or col == "Symbol") and col in filtered_display_df.columns]
@@ -1993,6 +2082,7 @@ def run_dashboard():
 
 if __name__ == "__main__":
     run_dashboard()
+
 
 
 
